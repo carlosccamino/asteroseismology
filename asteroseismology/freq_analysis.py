@@ -13,6 +13,43 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import os
 
+def to_microHz(f:float)->float:
+    """
+    Function to convert c/d to microHz
+
+    Parameters
+    ----------
+
+    f: float
+        Frequency in c/d
+
+    Output
+    ------
+
+    f_muHz: float
+        Frequency in microHz
+    """
+
+    return f*1000000/(24*3600)
+
+def to_cd(f:float)->float:
+    """
+    Function to convert microHz to c/d
+
+    Parameters
+    ----------
+
+    f: float
+        Frequency in microHz
+
+    Output
+    ------
+
+    f_cd: float
+        Frequency in c/d
+    """
+
+    return 24*3600*f/1000000
 
 def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic:int=3, save_file:bool=False, filename:str='test')->pd.DataFrame:
     """
