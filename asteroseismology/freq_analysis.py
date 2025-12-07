@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+import itertools as it
 import os
 
 def to_microHz(f:float)->float:
@@ -51,7 +52,7 @@ def to_cd(f:float)->float:
 
     return 24*3600*f/1000000
 
-def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic:int=3, save_file:bool=False, filename:str='test')->pd.DataFrame:
+def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic:int=3, save_file:bool=False, filename:str='test')-> pd.DataFrame:
     """
     Returns frequencies that are neither Nyquist nor window function aliased frequencies.
 
@@ -156,3 +157,39 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
                        , index=False, header=True)
             
     return all_frequencies
+
+def harmonic_check(freqs:pd.DataFrame, n:int, freqs_to_combine:int) -> pd.DataFrame:
+    """
+    Function to find the harmonics 
+
+    Parameters
+    ----------
+
+    freqs: pd.DataFrame
+        Frequencies to evaluate in a DataFrame containing an amplitude column.
+    
+    n: int
+        Maximum harmonic to find, from -n..., 0, ..., n
+    
+    freqs_to_combine: int
+        Determines how many frequencies will be used to compute the harmonics.
+        For instance, if freqs_to_combine = 3:
+
+        f = n_i·f_1+ n_j·f_2+n_k·f_3 with n_i,j,k from -n to n.
+
+    Output
+    ------
+
+    Dataframe containing the original frequencies and the harmonic combination found.
+
+    """
+
+    # All n values
+    n_values = range(-n, n+1)
+
+    # Getting the frequencies that will serve as base of the harmonics
+    columns = freqs.columns
+    freqs_sorted = freqs.sort_values(by=columns[1], ascending=False)
+    f_base = freqs_sorted.iloc[:freqs_to_combine, 0]
+
+
