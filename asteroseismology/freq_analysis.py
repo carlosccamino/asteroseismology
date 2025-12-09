@@ -158,7 +158,11 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
             
     return all_frequencies
 
-def harmonic_check(freqs:pd.DataFrame, n:int, freqs_to_combine:int) -> pd.DataFrame:
+import pandas as pd
+import itertools as it
+import numpy as np
+
+def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:int=0, amp_col:int=1) -> pd.DataFrame:
     """
     Function to find the harmonics 
 
@@ -170,26 +174,85 @@ def harmonic_check(freqs:pd.DataFrame, n:int, freqs_to_combine:int) -> pd.DataFr
     
     n: int
         Maximum harmonic to find, from -n..., 0, ..., n
-    
+
     freqs_to_combine: int
         Determines how many frequencies will be used to compute the harmonics.
-        For instance, if freqs_to_combine = 3:
 
-        f = n_i·f_1+ n_j·f_2+n_k·f_3 with n_i,j,k from -n to n.
+    err: float
+        Tolerance to consider a harmonic and a frequency the same frequency. Typically Rayleigh frequency.
+
+    f_col: int
+        Frequency column. Consider 0 as first column. Default = 0
+
+    amp_col: int
+        Amplitude column. Consider 0 as first column. Default = 1
 
     Output
     ------
 
-    Dataframe containing the original frequencies and the harmonic combination found.
+    Dataframe containing the original frequencies, harmonics and the harmonic combination found.
 
+    Example
+    -------
+        For instance, if freqs_to_combine = 3:
+
+        f = n_i·f_0 + n_j·f_2 with n_i,j from -n to n.
+
+        OR
+
+        f = n_i·f_0+ n_j·f_1
     """
 
-    # All n values
-    n_values = range(-n, n+1)
-
-    # Getting the frequencies that will serve as base of the harmonics
+    # 1. Sorting the frequencies per amplitude
     columns = freqs.columns
-    freqs_sorted = freqs.sort_values(by=columns[1], ascending=False)
-    f_base = freqs_sorted.iloc[:freqs_to_combine, 0]
+    freqs_sorted = freqs.sort_values(by=columns[amp_col], ascending=False).reset_index(drop=True)
+    structure = freqs_sorted.copy()
+    fre = np.array(structure.iloc[:,f_col])
+
+    # 2. Calculate all the possible combinations (including harmonics)
+    product = list(it.product(range(1,freqs_to_combine+1),range(n,-(n+1),-1)))
+    combination = list(it.combinations(product,2)) #Pairs of combination
+
+    # 3. List containing the results [(frequency number,combination)]
+    possible_combinations = []
+
+    for pair in combination:
+        #We avoid pairs of the same frequency and negative values of the combination to not repeat opperations
+        if ( ( (pair[0][0] != pair[1][0]) or (pair[1][1] == 0) ) and ( (pair[0][1]*fre[pair[0][0]-1]+pair[1][1]*fre[pair[1][0]-1]) > 0 ) ):
+            differencies = abs(fre - (pair[0][1]*fre[pair[0][0]-1]+pair[1][1]*fre[pair[1][0]-1])) #Differencies with all the frequencies
+            differencies_under_tol = np.where(differencies <= err)
+            if differencies_under_tol[0].size > 0:
+                fre_id = int(differencies_under_tol[0][0]+1) #Just the first coincidence
+                possible_combinations = possible_combinations+[(fre_id,)+pair]
+
+    possible_combinations = sorted(possible_combinations) #We order the structure
+
+    # 4. Now, complete the Combinations columns
+    structure.insert(0,'ID', ['F'+str(i) for i in range(1,len(fre)+1)])
+    f = [(0, (len(fre)+2, 0), (len(fre)+2, 0))] #We initialize a variable to allow to select the combination involving the first frequencies
+    comb = []
+    for m in possible_combinations:
+        if ( m[1][1] == 0 and m[2][1] != 1 and m[2][0] != m[0] ):
+            comb = str(m[2][1])+'*F'+str(m[2][0])
+        elif ( m[2][1] == 0 and m[1][1] != 1 and m[1][0] != m[0] ):
+            comb = str(m[1][1])+'*F'+str(m[1][0])
+        elif ( m[1][0] < m[0] and m[2][0] < m[0] ):
+            if m[2][1] > 0:
+                comb = str(m[1][1])+'*F'+str(m[1][0])+'+'+str(m[2][1])+'*F'+str(m[2][0])
+            else:
+                comb = str(m[1][1])+'*F'+str(m[1][0])+str(m[2][1])+'*F'+str(m[2][0])
+
+        # 4.1 Here we select the lowest combinations
+        if ( comb != []):
+            if ( m[0] != f[0]): #This is to add a combination for the next frequency
+                structure.loc[m[0]-1, 'Combinations'] = comb
+                f = m
+            elif (m[0] == f[0] and m[1][0]+m[2][0] < f[1][0]+f[2][0]): #This is to select the lowest frequency for the combination
+                structure.loc[m[0]-1, 'Combinations'] = comb
+                f = m
+
+        comb = [] # 4.2 Re-initialize this structure
+
+    return pd.DataFrame(data=structure)
 
 
