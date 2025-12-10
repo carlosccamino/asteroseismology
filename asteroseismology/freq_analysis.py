@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import itertools as it
 import os
+from intervaltree import IntervalTree
 
 def to_microHz(f:float)->float:
     """
@@ -256,3 +257,90 @@ def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:
     return pd.DataFrame(data=structure)
 
 
+def freq_resolver(freqs:pd.DataFrame, err:float, f_col:int=0, amp_col:int=1, type:str='close-open'):
+    """
+    This function evaluates if there are frequencies closer than err (e.g. the Rayleigh frequency). It will take the highest amplitude's as the real value.
+
+    Parameters
+    ----------
+
+    freqs: pd.DataFrame
+        DataFrame containing the frequencies and amplitudes
+
+    err: float
+        Tolerance value. Resolving power. For frequencies closer than this value, the one with highest amplitude will be considered the real one
+
+    f_col: int
+        Index of the column containing frequencies.
+
+    amp_col: int
+        Index of the column containing amplitudes.
+
+    type: str
+        Type of error interval
+
+            'close' = [-err, err]
+
+            'open' = (-err, err)
+
+            'close-open' = [-err, err)
+
+            'open-close' = (-err, err]
+
+    Output
+    ------
+
+    Frequency dataframe with only frequencies that are spaced more than err.
+    """
+
+    # 1. Extracting frequencies and amplitudes values
+    columns = freqs.columns
+    fs = freqs[columns[f_col]].values
+    amps = freqs[columns[amp_col]].values
+    err0 = err
+    eps = 10**-8
+
+    limits = {
+        'close': [err, err+eps],
+        'open' : [err-eps, err-eps],
+        'close-open': [err, err],
+        'open-close': [err-eps, err+eps]
+    }
+    
+
+    #2. We create an interval tree to consider the overalps within err
+    tree = IntervalTree()
+
+    #3. We defined the resolved frequencies
+    resolved = []
+
+    # 4. Loop over the frequencies
+    for i, f in enumerate(fs):
+
+        # 4.1 Check if the frequency is within any tolerance range in the tree
+        overlaps = tree.overlap(f-err/2, f+err/2)
+
+        # 4.2 Adding to the tree in case there is no overlaps
+        if not overlaps:
+            tree.addi(f-limits[type][0]/2, f+limits[type][1]/2, i) #begin, end, index
+            resolved.append(i)
+            continue
+
+        # 4.3 If the frequency does overlaps, comparing amplitudes
+        best = i
+        for iv in overlaps:
+            j = iv.data
+            if amps[j]>amps[i]:
+                best = j
+
+        # 4.4 If the current one is still the best, we replace and remove the rest that overlaps the current one
+        if best == i:
+            for iv in overlaps:
+                tree.remove(iv)
+                resolved.remove(iv.data)
+            
+            # 4.4.1 Inserting the current one
+            tree.addi(f-limits[type][0]/2, f+limits[type][1]/2, i)
+            resolved.append(i)
+
+    return freqs.iloc[resolved].reset_index(drop=True)
