@@ -159,9 +159,6 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
             
     return all_frequencies
 
-import pandas as pd
-import itertools as it
-import numpy as np
 
 def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:int=0, amp_col:int=1) -> pd.DataFrame:
     """
