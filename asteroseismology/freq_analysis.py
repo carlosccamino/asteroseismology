@@ -70,7 +70,7 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
     
     max_harmonic: int
         Maximum integer to look for when applying f_alias = |f_real +/- f_wp|, 
-        being f_wp a frequency from the window peaks
+        being f_wp the p-th frequency from the window peaks
 
     save_file: bool
         If true, a folder 'real_freqs' will be generated at your working directory containing a file
@@ -84,13 +84,15 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
     ------
 
     real_freqs: pd.DataFrame
-        DataFrame with the same format as the file output
+        DataFrame with the same format as the file output and a Alias column where the combinations are written as n_i*f_i+/-n_j*f_wj,
+        being i and j the index of the i-th and j-th real frequency and window frequency, respectively
     """
 
     real_frequencies = []
-    all_frequencies = []
+    all_combis = []
     columns = frequency_sample.columns
-    frequency_sample.sort_values(by=columns[1], ascending=True, inplace=True)
+    frequency_sample.sort_values(by=columns[1], ascending=False, inplace=True, ignore_index=True)
+    file_df = frequency_sample.copy()
     
     for row in frequency_sample.itertuples(index=False):
         is_alias = False
@@ -109,12 +111,12 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
                     break
         
         if is_alias:
-            all_frequencies.append((f_peak, amp_peak, error_f_peak, combination))
+            all_combis.append(combination)
             continue
         
         # === 2. INVERSE ALIAS CHECK (vs. already accepted REAL peaks) ===
         # Is this peak (f_peak) an alias of a REAL frequency (f_real) already found?
-        for i, (f_real, amp_real, error_f_real) in enumerate(real_frequencies):
+        for i, f_real in enumerate(real_frequencies):
             
             
             # We only check against the window frequencies
@@ -125,18 +127,18 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
                     alias_sub = abs(f_real - n * f_w)
                     
                     # Dynamic Tolerance Check: Does f_peak fall within twice the error of the theoretical alias?
-                    if abs(f_peak - alias_sum) < error_f_peak:
+                    if abs(f_peak - alias_sum) <= error_f_peak:
                         
                         # Since data is sorted by amplitude, amp_peak <= amp_real,
                         # confirming this peak is a weaker "daughter" peak.
                         is_alias = True
                         combination = f"f_{i}+{n}*f_w{j}"
-                        all_frequencies.append((f_peak, amp_peak, error_f_peak, combination))
+                        all_combis.append(combination)
                         break
-                    elif abs(f_peak - alias_sub) < error_f_peak:
+                    elif abs(f_peak - alias_sub) <= error_f_peak:
                         is_alias = True
                         combination = f"f_{i}-{n}*f_w{j}"
-                        all_frequencies.append((f_peak, amp_peak, error_f_peak, combination))
+                        all_combis.append(combination)
                         break
 
                 if is_alias:
@@ -148,11 +150,11 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
         # === 3. ACCEPTANCE ===
         # If the peak fails all alias checks, it's accepted as a candidate for a real physical signal.
         if not is_alias:
-            real_frequencies.append((f_peak, amp_peak, error_f_peak))
-            all_frequencies.append((f_peak, amp_peak, error_f_peak, combination))
+            real_frequencies.append(f_peak)
+            all_combis.append(np.nan)
 
-    file_df = pd.DataFrame(data = all_frequencies, columns=['Freqs', 'Amps', 'Freq_err', 'Alias'])
-    file_df.sort_values(by='Amps', ascending=False, inplace=True)
+    file_df['Alias'] = all_combis
+    #file_df.sort_values(by=, ascending=False, inplace=True)
     if save_file:
         os.makedirs('real_freqs', exist_ok=True)
         file_df.to_csv('./real_freqs/'+filename
@@ -209,6 +211,9 @@ def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:
     fre = np.array(structure.iloc[:,f_col])
 
     # 2. Calculate all the possible combinations (including harmonics)
+    # 2.1 In case number of frequencies is higher than the actual list, updating freqs_to_combine
+    if freqs_to_combine > len(fre):
+        freqs_to_combine = len(fre)
     product = list(it.product(range(1,freqs_to_combine+1),range(n,-(n+1),-1)))
     combination = list(it.combinations(product,2)) #Pairs of combination
 
