@@ -150,10 +150,11 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
         if not is_alias:
             real_frequencies.append((f_peak, amp_peak, error_f_peak))
             all_frequencies.append((f_peak, amp_peak, error_f_peak, combination))
+
+    file_df = pd.DataFrame(data = all_frequencies, columns=['Freqs', 'Amps', 'Freq_err', 'Alias'])
+    file_df.sort_values(by='Amps', ascending=False, inplace=True)
     if save_file:
         os.makedirs('real_freqs', exist_ok=True)
-        file_df = pd.DataFrame(data = all_frequencies, columns=['Freqs', 'Amps', 'Freq_err', 'Alias'])
-        file_df.sort_values(by='Amps', ascending=False, inplace=True)
         file_df.to_csv('./real_freqs/'+filename
                        , index=False, header=True)
             
