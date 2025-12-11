@@ -157,7 +157,7 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
         file_df.to_csv('./real_freqs/'+filename
                        , index=False, header=True)
             
-    return all_frequencies
+    return file_df
 
 
 def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:int=0, amp_col:int=1) -> pd.DataFrame:
