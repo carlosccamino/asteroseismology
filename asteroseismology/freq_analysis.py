@@ -2,7 +2,7 @@
 Author: Carlos Casimiro Camino Mesa
 Date: 11-11-2025
 
-Last Update: 07-12-2025
+Last Update: 11-12-2025
 
 Module to analyze frequencies and stellar oscillations
 """
@@ -159,9 +159,6 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
             
     return all_frequencies
 
-import pandas as pd
-import itertools as it
-import numpy as np
 
 def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:int=0, amp_col:int=1) -> pd.DataFrame:
     """
@@ -344,3 +341,56 @@ def freq_resolver(freqs:pd.DataFrame, err:float, f_col:int=0, amp_col:int=1, typ
             resolved.append(i)
 
     return freqs.iloc[resolved].reset_index(drop=True)
+
+def window_function(t:np.ndarray, f_min:float, f_max:float, w:np.ndarray=None, resol:int=2000):
+    """
+    Calculate the normalised window function for f in [f_min, f_max] for a given time series.
+
+    W(f) = | sum_j w_j * exp(-2π i f t_j) |^2
+
+    Parameters
+    ----------
+
+    t: np.ndarray
+        Time array.
+
+    f_min: float
+        Minimum frecuency for which the window function will be computed
+
+    f_max: float
+        Minimum frecuency for which the window function will be computed
+
+    w: np.ndarray
+        Weights of the sum components. All 1 by default
+
+    resol: int
+        Resolution in frequency, i.e. the how many frequency to compute between f_min and f_max
+
+    Output
+    ------
+
+    W(f) in a np.ndarray format.
+    """
+
+    # 1. Assigning weights if they are not
+    if w is None:
+        w = np.ones_like(t)
+    
+    # 2. Defining the frequency span interval
+    freqs = np.linspace(f_min, f_max, resol)
+
+    # 3. Creating the window function array as a complex vector
+    W = np.zeros_like(freqs, dtype=np.complex128)
+
+    # 4. Computing W for every frequency in blocks to not burn out RAM
+    block = 2000
+    for i in range(0, len(freqs), block):
+        f_block = freqs[i:i+block]
+
+        # 4.1 Computing the exponential
+        exponent = -2j*np.pi*np.outer(f_block, t) # Outer of a ^ b (column vectors) is the same as the matritial product of a·b^T. 
+
+        # 4.2 Computing W with the weights as a matrix product
+        W[i:i+block] = np.exp(exponent) @ w # 
+
+    return np.abs(W)**2/(np.max(np.abs(W)**2))
