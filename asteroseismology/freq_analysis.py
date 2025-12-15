@@ -14,6 +14,7 @@ from matplotlib.gridspec import GridSpec
 import itertools as it
 import os
 from intervaltree import IntervalTree
+from astropy.timeseries import LombScargle
 
 def to_microHz(f:float)->float:
     """
@@ -348,7 +349,7 @@ def freq_resolver(freqs:pd.DataFrame, err:float, f_col:int=0, amp_col:int=1, typ
 
     return freqs.iloc[resolved].reset_index(drop=True)
 
-def window_function(t:np.ndarray, f_min:float, f_max:float, w:np.ndarray=None, resol:int=2000):
+def window_function(t:np.ndarray, f_min:float, f_max:float, w:np.ndarray=None, resol:int=2000, method:str='Fourier', **ls_kwargs):
     """
     Calculate the normalised window function for f in [f_min, f_max] for a given time series.
 
@@ -364,39 +365,67 @@ def window_function(t:np.ndarray, f_min:float, f_max:float, w:np.ndarray=None, r
         Minimum frecuency for which the window function will be computed
 
     f_max: float
-        Minimum frecuency for which the window function will be computed
+        Maximum frecuency for which the window function will be computed
 
     w: np.ndarray
         Weights of the sum components. All 1 by default
 
     resol: int
-        Resolution in frequency, i.e. the how many frequency to compute between f_min and f_max
+        - "Fourier": Resolution in frequency, i.e. the how many frequency to compute between f_min and f_max
+        - "LombScargle": Oversampling factor
+
+    method: str
+        Method to compute the window function.
+            - "Fourier": Classical theoretical FT of the window function.
+            - "LombScargle": Compute the LombScargle periodogram of the window function. LombScargle from astropy.timeseries
+    
+    ls_kwargs: any
+        kwargs for astropy.timeseries.LombScargle periodogram.
 
     Output
     ------
 
-    W(f) in a np.ndarray format.
+    W(f) in a np.ndarray format with 2 columns (N,2) [freq, W(f)]. Output is normalized by the maximum value
     """
+    if method == 'Fourier':
+        # 1. Assigning weights if they are not
+        if w is None:
+            w = np.ones_like(t)
 
-    # 1. Assigning weights if they are not
-    if w is None:
-        w = np.ones_like(t)
-    
-    # 2. Defining the frequency span interval
-    freqs = np.linspace(f_min, f_max, resol)
+        # 2. Defining the frequency span interval
+        freqs = np.linspace(f_min, f_max, resol)
 
-    # 3. Creating the window function array as a complex vector
-    W = np.zeros_like(freqs, dtype=np.complex128)
+        # 3. Creating the window function array as a complex vector
+        W = np.zeros_like(freqs, dtype=np.complex128)
 
-    # 4. Computing W for every frequency in blocks to not burn out RAM
-    block = 2000
-    for i in range(0, len(freqs), block):
-        f_block = freqs[i:i+block]
+        # 4. Computing W for every frequency in blocks to not burn out RAM
+        block = 2000
+        for i in range(0, len(freqs), block):
+            f_block = freqs[i:i+block]
 
-        # 4.1 Computing the exponential
-        exponent = -2j*np.pi*np.outer(f_block, t) # Outer of a ^ b (column vectors) is the same as the matritial product of a·b^T. 
+            # 4.1 Computing the exponential
+            exponent = -2j*np.pi*np.outer(f_block, t) # Outer of a ^ b (column vectors) is the same as the matritial product of a·b^T. 
 
-        # 4.2 Computing W with the weights as a matrix product
-        W[i:i+block] = np.exp(exponent) @ w # 
+            # 4.2 Computing W with the weights as a matrix product
+            W[i:i+block] = np.exp(exponent) @ w #
 
-    return np.abs(W)**2/(np.max(np.abs(W)**2))
+        # 4.3 Returning the output
+        window_normalized = np.abs(W)**2/(np.max(np.abs(W)**2))
+        window_matrix_normalized = np.column_stack((freqs ,window_normalized))
+
+    elif method == 'LombScargle':
+
+        # 1. Creating the array with all fluxes set to 1
+        flux = np.ones_like(t)
+
+        # 2. Computing LombScargle periodogram without centering data nor fitting mean
+        ls = LombScargle(t=t, y=flux, center_data=False, fit_mean=False, **ls_kwargs)
+
+        # 2.1 Getting the amplitude and frequencies
+        freqs, window = ls.autopower(method='fast', maximum_frequency=f_max, samples_per_peak=resol)
+        window_matrix_normalized = np.column_stack((freqs, window))
+        
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+    return window_matrix_normalized
