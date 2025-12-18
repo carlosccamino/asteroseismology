@@ -2,7 +2,7 @@
 Author: Carlos Casimiro Camino Mesa
 Date: 11-11-2025
 
-Last Update: 11-12-2025
+Last Update: 18-12-2025
 
 Module to analyze frequencies and stellar oscillations
 """
@@ -429,3 +429,133 @@ def window_function(t:np.ndarray, f_min:float, f_max:float, w:np.ndarray=None, r
         raise ValueError(f"Unknown method: {method}")
 
     return window_matrix_normalized
+
+
+def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.ndarray, max_n:int = 1, tol:float=0) -> pd.DataFrame:
+    """
+    This function evaluates the alias frequencies produced by the convolution of the window function and the real signal.
+
+    An alias is identified if:
+
+            |f_alias - f_real| = n·f_wf +/- tol  
+    
+    where f_wf are the frequencies of the window function. This function also evaluates the amplitudes compared to the 
+    
+    offered by window function, i.e. amplitudes of peaks suspected to be aliased frequencies will be checked if their 
+    
+    amplitudes are a factor of the window function power computed for f_wf.
+
+    Parameters
+    ----------
+
+    freqs: pd.DataFrame
+        DataFrame containing (Frequencies, Amplitudes) from the sample
+    
+    f_col: int
+        Index column of the frequencies
+
+    amp_col: int
+        Index column of the amplitudes
+
+    window_function: np.ndarray
+        Array of shape (N,2) containing (Frequencies, W(f)) from the computed window function
+
+    max_n: int
+        Max integer to evaluate the spurious frequencies in the window function. Usually this value is 1, more than this value is
+
+        not implemented yet.
+
+    tol: float
+        Tolerance or Error to consider a frequency an alias
+
+    Output
+    ------
+
+        DataFrame with all the frequencies and an extra column indicating the combination 
+        found for an alias frequency.
+    """
+
+    # 1. Finding the lowest amplitude detected in the real sample to see the lowest limit.
+    #lowest_amp = freqs[:,1].min()
+
+    # 2. Sorting the dataframe per amplitude
+    columns = freqs.columns
+    freqs_df_sorted = freqs.sort_values(by=columns[amp_col], ascending=False, ignore_index=True)
+    freqs_matrix = freqs.iloc[:,[f_col,amp_col]].to_numpy()
+    freqs_sorted = freqs_matrix[np.argsort(freqs_matrix[:,1])][::-1]
+    freqs_list = freqs_sorted[:,0].copy()
+
+    # 3. We first check if there are any observed frequency in the window function
+
+    # 3.1 Creating a initial_check_matrix
+    window_sorted = window_function[np.argsort(window_function[:,1])][::-1]
+    window_list = window_sorted[:,0].copy()
+    initial_check_matrix = freqs_list[:,None] - window_list[None,:] # f_real - f_wf
+
+    # 3.2 Saving indexes of the observed frequencies that matched
+    freqs_in_window_idx = np.argwhere(np.abs(initial_check_matrix) <= tol)
+
+    # 4. We need to compute all the possible combinations of f_real +/- n·f_wf
+
+    # 4.1 All n possible values (-n, -n+1,...0,...,n)
+    n = np.arange(-max_n, max_n+1, 1)
+    # 4.1.1 Discarding the n=0
+    n = n[n!=0]
+    # 4.2 Create a matrix win 2n+1 columns consisting of f_wf_i*n_j (f_wf x n)
+    delta_matrix = np.outer(window_sorted[:,0], n)    
+    
+    # 5. We need to compute all the possible differences between all the frequencies
+
+    # 5.1 Compute a matrix of f_i-f_j with both f_i and f_j sorted by amplitude (f_real x f_real)
+    diffs_matrix = freqs_list[:,None] - freqs_list[None,:] # Broadcasting to be able to substract
+
+    # 5.2 We need to compare which elements of |diffs_matrix - delta_matrix| <= tol (sólo nos quedamos con el primero)
+    # 5.2.1 We expand dimensions to be able to substract (broadcasting)
+    diffs_exp = diffs_matrix[:, :, None, None]       # (f_real, f_real, 1, 1)
+    delta_exp = delta_matrix[None, None, :, :]       # (1, 1, f_wf, n)
+
+    # 5.2.2 We take the boolean array where the match happens
+    matches_id = np.abs(delta_exp-diffs_exp)<=tol
+
+    # 5.2.3 We only select such that an alias is combination of stronger frequencies in amplitude (j<i)
+    N = freqs_sorted.shape[0]
+    i_idx, j_idx = np.meshgrid(np.arange(N), np.arange(N), indexing='ij')
+    mask_hierarchy = j_idx < i_idx
+    mask_hierarchy = mask_hierarchy[:, :, None, None]   # broadcasting
+
+    matches_id &= mask_hierarchy
+
+    # 5.2.4 Selecting the index where this happens
+    alias_candidates_idx = np.argwhere(matches_id) # (f_real, f_real, f_wf, n)
+
+    # 6. Creating the output as a dataframe
+    combinations = []
+    labels=[]
+    for freq_idx in range(N):
+        # If frequency was in window function, it will have a zero in initial_check_matrix at that row
+        if np.isin(freq_idx, freqs_in_window_idx[:,0]):
+            # We need to take the index of the FW, which is the column index
+            match_idx = freqs_in_window_idx[freqs_in_window_idx[:,0] == freq_idx]
+            wf_idx = match_idx[0, 1]
+            combinations.append(f"FW_{wf_idx}")
+
+        #If frequency is an alias due to the window function
+        elif np.isin(freq_idx, alias_candidates_idx[:,0]):
+            matches = alias_candidates_idx[alias_candidates_idx[:,0] == freq_idx]
+            main_f_idx = matches[0,1]
+            wf_idx = matches[0,2]
+            sign = "+" if matches[0,3] == 1 else "-"
+            combinations.append(f"F{main_f_idx}{sign}FW{wf_idx}")
+
+        #Real freq
+        else:
+            combinations.append(np.nan)
+
+        labels.append(f"F{freq_idx}")
+
+    # 7. Updating the DataFrame
+    freqs_df_sorted['Combinations'] = combinations
+    freqs_df_sorted.insert(loc=0, column='Label', value=labels)
+
+
+    return freqs_df_sorted
