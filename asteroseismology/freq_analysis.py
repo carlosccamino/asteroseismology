@@ -545,17 +545,18 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
             main_f_idx = matches[0,1]
             wf_idx = matches[0,2]
             sign = "+" if matches[0,3] == 1 else "-"
-            combinations.append(f"F{main_f_idx}{sign}FW{wf_idx}")
+            combinations.append(f"F{main_f_idx+1}{sign}FW{wf_idx}")
 
         #Real freq
         else:
             combinations.append(np.nan)
 
-        labels.append(f"F{freq_idx}")
+        labels.append(f"F{freq_idx+1}")
 
     # 7. Updating the DataFrame
     freqs_df_sorted['Combinations'] = combinations
-    freqs_df_sorted.insert(loc=0, column='Label', value=labels)
+    if 'ID' not in freqs_df_sorted.columns:
+        freqs_df_sorted.insert(loc=0, column='ID', value=labels)
 
 
     return freqs_df_sorted
