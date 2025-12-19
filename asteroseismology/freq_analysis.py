@@ -475,14 +475,14 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
         found for an alias frequency.
     """
 
-    # 1. Finding the lowest amplitude detected in the real sample to see the lowest limit.
-    #lowest_amp = freqs[:,1].min()
-
-    # 2. Sorting the dataframe per amplitude
+    # 1. Sorting the dataframe per amplitude
     columns = freqs.columns
     freqs_df_sorted = freqs.sort_values(by=columns[amp_col], ascending=False, ignore_index=True)
     freqs_matrix = freqs.iloc[:,[f_col,amp_col]].to_numpy()
+
+    # 2. Finding the lowest amplitude detected in the real sample to see the lowest limit.
     freqs_sorted = freqs_matrix[np.argsort(freqs_matrix[:,1])][::-1]
+    lowest_amp = freqs_sorted[:,1].min()
     freqs_list = freqs_sorted[:,0].copy()
 
     # 3. We first check if there are any observed frequency in the window function
@@ -531,6 +531,7 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
     # 6. Creating the output as a dataframe
     combinations = []
     labels=[]
+    teo_amp=[]
     for freq_idx in range(N):
         # If frequency was in window function, it will have a zero in initial_check_matrix at that row
         if np.isin(freq_idx, freqs_in_window_idx[:,0]):
@@ -538,23 +539,33 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
             match_idx = freqs_in_window_idx[freqs_in_window_idx[:,0] == freq_idx]
             wf_idx = match_idx[0, 1]
             combinations.append(f"FW_{wf_idx}")
+            teo_amp.append(np.nan)
 
         #If frequency is an alias due to the window function
         elif np.isin(freq_idx, alias_candidates_idx[:,0]):
             matches = alias_candidates_idx[alias_candidates_idx[:,0] == freq_idx]
             main_f_idx = matches[0,1]
             wf_idx = matches[0,2]
-            sign = "+" if matches[0,3] == 1 else "-"
-            combinations.append(f"F{main_f_idx+1}{sign}FW{wf_idx}")
+            amp_wf = window_sorted[wf_idx][1]
+            amp_f = freqs_sorted[main_f_idx][1]
+            if amp_f*amp_wf>lowest_amp:
+                sign = "+" if matches[0,3] == 1 else "-"
+                combinations.append(f"F{main_f_idx+1}{sign}FW{wf_idx}")
+                teo_amp.append(amp_f*amp_wf)
+            else:
+                combinations.append(np.nan)
+                teo_amp.append(np.nan)                
 
         #Real freq
         else:
             combinations.append(np.nan)
+            teo_amp.append(np.nan)
 
         labels.append(f"F{freq_idx+1}")
 
     # 7. Updating the DataFrame
     freqs_df_sorted['Combinations'] = combinations
+    freqs_df_sorted['Theoretical Alias_Amp'] = teo_amp
     if 'ID' not in freqs_df_sorted.columns:
         freqs_df_sorted.insert(loc=0, column='ID', value=labels)
 
