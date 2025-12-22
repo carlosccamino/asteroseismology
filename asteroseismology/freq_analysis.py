@@ -233,7 +233,9 @@ def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:
     possible_combinations = sorted(possible_combinations) #We order the structure
 
     # 4. Now, complete the Combinations columns
-    structure.insert(0,'ID', ['F'+str(i) for i in range(1,len(fre)+1)])
+    if 'ID' not in structure.columns:
+        structure.insert(0,'ID', ['F'+str(i) for i in range(1,len(fre)+1)])
+        
     f = [(0, (len(fre)+2, 0), (len(fre)+2, 0))] #We initialize a variable to allow to select the combination involving the first frequencies
     comb = []
     for m in possible_combinations:
@@ -539,7 +541,8 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
             match_idx = freqs_in_window_idx[freqs_in_window_idx[:,0] == freq_idx]
             wf_idx = match_idx[0, 1]
             combinations.append(f"FW_{wf_idx}")
-            teo_amp.append(np.nan)
+            amp_wf = window_sorted[wf_idx][1]
+            teo_amp.append(amp_wf)
 
         #If frequency is an alias due to the window function
         elif np.isin(freq_idx, alias_candidates_idx[:,0]):
@@ -564,7 +567,7 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
         labels.append(f"F{freq_idx+1}")
 
     # 7. Updating the DataFrame
-    freqs_df_sorted['Combinations'] = combinations
+    freqs_df_sorted['Window_Alias'] = combinations
     freqs_df_sorted['Theoretical Alias_Amp'] = teo_amp
     if 'ID' not in freqs_df_sorted.columns:
         freqs_df_sorted.insert(loc=0, column='ID', value=labels)
