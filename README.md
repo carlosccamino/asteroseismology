@@ -11,3 +11,7 @@ in international units. Additionally, asteroseismologic related values are added
 ### freq_analysis
 
 This module contains frequency analysis to identify harmonics, aliased functions and conversion of units (c/d->microHz) function.
+
+### math
+
+This module contains customized math functions
