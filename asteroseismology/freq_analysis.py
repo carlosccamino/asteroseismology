@@ -564,12 +564,12 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
             combinations.append(np.nan)
             teo_amp.append(np.nan)
 
-        labels.append(f"F{freq_idx+1}")
+        labels.append(f"f{freq_idx+1}")
 
     # 7. Updating the DataFrame
     freqs_df_sorted['Window_Alias'] = combinations
     freqs_df_sorted['Theoretical Alias_Amp'] = teo_amp
-    if 'ID' not in freqs_df_sorted.columns:
+    if 'f_ID' not in freqs_df_sorted.columns:
         freqs_df_sorted.insert(loc=0, column='ID', value=labels)
 
 
