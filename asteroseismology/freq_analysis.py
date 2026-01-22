@@ -553,7 +553,7 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
             amp_f = freqs_sorted[main_f_idx][1]
             if amp_f*amp_wf>lowest_amp:
                 sign = "+" if matches[0,3] == 1 else "-"
-                combinations.append(f"F{main_f_idx+1}{sign}FW{wf_idx}")
+                combinations.append(f"f{main_f_idx+1}{sign}FW{wf_idx}")
                 teo_amp.append(amp_f*amp_wf)
             else:
                 combinations.append(np.nan)
@@ -570,7 +570,7 @@ def window_check(freqs:pd.DataFrame, f_col:int, amp_col:int, window_function:np.
     freqs_df_sorted['Window_Alias'] = combinations
     freqs_df_sorted['Theoretical Alias_Amp'] = teo_amp
     if 'f_ID' not in freqs_df_sorted.columns:
-        freqs_df_sorted.insert(loc=0, column='ID', value=labels)
+        freqs_df_sorted.insert(loc=0, column='f_ID', value=labels)
 
 
     return freqs_df_sorted
