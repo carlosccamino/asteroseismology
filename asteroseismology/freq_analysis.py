@@ -164,103 +164,219 @@ def anti_aliasing(frequency_sample:pd.DataFrame, window_peaks:list, max_harmonic
     return file_df
 
 
-def harmonics(freqs:pd.DataFrame, n:int, freqs_to_combine:int, err:float, f_col:int=0, amp_col:int=1) -> pd.DataFrame:
+def harmonics(
+    df: pd.DataFrame,
+    freq_col: int,
+    amp_col: int,
+    harmonic_order: int,
+    n_independent: int,
+    tol: float
+) -> pd.DataFrame:
+
     """
-    Function to find the harmonics 
+Identify independent frequencies and detect harmonic, subharmonic,
+and linear combinations with amplitude-based precedence.
 
-    Parameters
-    ----------
+This function analyzes a set of spectral frequencies and amplitudes,
+assigning each frequency a unique ID based on descending amplitude
+(F1 = highest amplitude). A frequency can only be explained as a
+combination of frequencies with strictly higher amplitude, ensuring
+a physically consistent and acyclic dependency structure.
 
-    freqs: pd.DataFrame
-        Frequencies to evaluate in a DataFrame containing an amplitude column.
-    
-    n: int
-        Maximum harmonic to find, from -n..., 0, ..., n
+The algorithm:
+1. Sorts frequencies by descending amplitude.
+2. Assigns IDs according to this order.
+3. Selects a set of independent frequencies, rejecting any frequency
+   that can be expressed as a linear combination of previously selected
+   (higher-amplitude) independent frequencies.
+4. For all remaining frequencies, attempts to explain them using:
+   - Harmonics:        f ≈ n · F_i
+   - Subharmonics:     f ≈ (1/n) · F_i
+   - Binary mixtures:  f ≈ n1 · F_i ± n2 · F_j
+   where all base frequencies have higher amplitude than the target.
+5. Returns the original DataFrame with two additional columns:
+   - 'ID': unique frequency identifier ordered by amplitude
+   - 'linear_combination': textual representation of the detected relation
 
-    freqs_to_combine: int
-        Determines how many frequencies will be used to compute the harmonics.
+Parameters
+----------
+df : pandas.DataFrame
+    Input DataFrame containing frequency and amplitude data.
+freq_col : int
+    Index of the column containing frequencies (in Hz).
+amp_col : int
+    Index of the column containing amplitudes.
+harmonic_order : int
+    Maximum harmonic/subharmonic order to consider.
+    Harmonics up to n·f and subharmonics down to f/n are evaluated.
+n_independent : int
+    Desired number of independent frequencies. If larger than the
+    number of available frequencies, all possible independent
+    frequencies are returned.
+tol : float
+    Absolute tolerance (in Hz) used when comparing frequencies.
 
-    err: float
-        Tolerance to consider a harmonic and a frequency the same frequency. Typically Rayleigh frequency.
+Returns
+-------
+pandas.DataFrame
+    A copy of the input DataFrame with two extra columns:
+    - 'ID': unique identifier (F1, F2, ...)
+    - 'linear_combination': detected harmonic or linear relation,
+      or 'independent' if the frequency is considered independent.
 
-    f_col: int
-        Frequency column. Consider 0 as first column. Default = 0
+Notes
+-----
+- A frequency is never allowed to depend on another frequency with
+  lower amplitude.
+- Equal-frequency matches always favor the higher-amplitude component.
+- The dependency graph is guaranteed to be directed and acyclic.
+- The implementation prioritizes clarity and physical consistency
+  while leveraging NumPy vectorization for performance.
 
-    amp_col: int
-        Amplitude column. Consider 0 as first column. Default = 1
+Examples
+--------
+>>> df_out = harmonics(df, freq_col=0, amp_col=1,
+...                    harmonic_order=5,
+...                    n_independent=10,
+...                    tol=1e-3)
+"""
 
-    Output
-    ------
 
-    Dataframe containing the original frequencies, harmonics and the harmonic combination found.
+    out = df.copy()
+    n = len(out)
+    n_independent = min(n_independent, n)
 
-    Example
-    -------
-        For instance, if freqs_to_combine = 3:
+    freqs = out.iloc[:, freq_col].to_numpy(float)
+    amps = out.iloc[:, amp_col].to_numpy(float)
 
-        f = n_i·f_0 + n_j·f_2 with n_i,j from -n to n.
+    # --------------------------------------------------
+    # Sort by amplitude (descending)
+    # --------------------------------------------------
+    order = np.argsort(-amps)
+    freqs_sorted = freqs[order]
 
-        OR
+    # --------------------------------------------------
+    # Assign IDs following amplitude order
+    # --------------------------------------------------
+    IDs_sorted = np.array([f"F{i+1}" for i in range(n)], dtype=object)
+    IDs = np.empty(n, dtype=object)
+    IDs[order] = IDs_sorted
 
-        f = n_i·f_0+ n_j·f_1
-    """
+    # --------------------------------------------------
+    # Harmonic coefficients ±n (excluding zero)
+    # --------------------------------------------------
+    coeffs = np.r_[np.arange(-harmonic_order, 0),
+                   np.arange(1, harmonic_order + 1)]
 
-    # 1. Sorting the frequencies per amplitude
-    columns = freqs.columns
-    freqs_sorted = freqs.sort_values(by=columns[amp_col], ascending=False).reset_index(drop=True)
-    structure = freqs_sorted.copy()
-    fre = np.array(structure.iloc[:,f_col])
+    # Precompute binary coefficient grid
+    n1, n2 = np.meshgrid(coeffs, coeffs, indexing="ij")
 
-    # 2. Calculate all the possible combinations (including harmonics)
-    # 2.1 In case number of frequencies is higher than the actual list, updating freqs_to_combine
-    if freqs_to_combine > len(fre):
-        freqs_to_combine = len(fre)
-    product = list(it.product(range(1,freqs_to_combine+1),range(n,-(n+1),-1)))
-    combination = list(it.combinations(product,2)) #Pairs of combination
+    independent_freqs = []
+    independent_ids = []
 
-    # 3. List containing the results [(frequency number,combination)]
-    possible_combinations = []
+    # --------------------------------------------------
+    # Linear-combination check with amplitude precedence
+    # --------------------------------------------------
+    def is_linear_combination(f, base_freqs):
+        base_freqs = np.asarray(base_freqs)
 
-    for pair in combination:
-        #We avoid pairs of the same frequency and negative values of the combination to not repeat opperations
-        if ( ( (pair[0][0] != pair[1][0]) or (pair[1][1] == 0) ) and ( (pair[0][1]*fre[pair[0][0]-1]+pair[1][1]*fre[pair[1][0]-1]) > 0 ) ):
-            differencies = abs(fre - (pair[0][1]*fre[pair[0][0]-1]+pair[1][1]*fre[pair[1][0]-1])) #Differencies with all the frequencies
-            differencies_under_tol = np.where(differencies <= err)
-            if differencies_under_tol[0].size > 0:
-                fre_id = int(differencies_under_tol[0][0]+1) #Just the first coincidence
-                possible_combinations = possible_combinations+[(fre_id,)+pair]
+        # Harmonics
+        if np.any(np.isclose(coeffs[:, None] * base_freqs, f, atol=tol)):
+            return True
 
-    possible_combinations = sorted(possible_combinations) #We order the structure
+        # Subharmonics (1/n)
+        for n in range(2, harmonic_order + 1):
+            if np.any(np.isclose(base_freqs / n, f, atol=tol)):
+                return True
 
-    # 4. Now, complete the Combinations columns
-    if 'ID' not in structure.columns:
-        structure.insert(0,'ID', ['F'+str(i) for i in range(1,len(fre)+1)])
-        
-    f = [(0, (len(fre)+2, 0), (len(fre)+2, 0))] #We initialize a variable to allow to select the combination involving the first frequencies
-    comb = []
-    for m in possible_combinations:
-        if ( m[1][1] == 0 and m[2][1] != 1 and m[2][0] != m[0] ):
-            comb = str(m[2][1])+'*F'+str(m[2][0])
-        elif ( m[2][1] == 0 and m[1][1] != 1 and m[1][0] != m[0] ):
-            comb = str(m[1][1])+'*F'+str(m[1][0])
-        elif ( m[1][0] < m[0] and m[2][0] < m[0] ):
-            if m[2][1] > 0:
-                comb = str(m[1][1])+'*F'+str(m[1][0])+'+'+str(m[2][1])+'*F'+str(m[2][0])
-            else:
-                comb = str(m[1][1])+'*F'+str(m[1][0])+str(m[2][1])+'*F'+str(m[2][0])
+        # Binary combinations
+        for i in range(len(base_freqs)):
+            for j in range(i + 1, len(base_freqs)):
+                comb = n1 * base_freqs[i] + n2 * base_freqs[j]
+                if np.any(np.isclose(comb, f, atol=tol)):
+                    return True
 
-        # 4.1 Here we select the lowest combinations
-        if ( comb != []):
-            if ( m[0] != f[0]): #This is to add a combination for the next frequency
-                structure.loc[m[0]-1, 'Combinations'] = comb
-                f = m
-            elif (m[0] == f[0] and m[1][0]+m[2][0] < f[1][0]+f[2][0]): #This is to select the lowest frequency for the combination
-                structure.loc[m[0]-1, 'Combinations'] = comb
-                f = m
+        return False
 
-        comb = [] # 4.2 Re-initialize this structure
+    # --------------------------------------------------
+    # Independent frequency selection
+    # --------------------------------------------------
+    for idx_sorted, f in zip(order, freqs_sorted):
+        if len(independent_freqs) == n_independent:
+            break
+        if not independent_freqs or not is_linear_combination(f, independent_freqs):
+            independent_freqs.append(f)
+            independent_ids.append(IDs[idx_sorted])
 
-    return pd.DataFrame(data=structure)
+    independent_freqs = np.asarray(independent_freqs)
+
+    # --------------------------------------------------
+    # Linear combination column
+    # --------------------------------------------------
+    lin_comb = np.full(n, "", dtype=object)
+
+    for fid in independent_ids:
+        lin_comb[np.where(IDs == fid)[0][0]] = "independent"
+
+    # --------------------------------------------------
+    # Analyze dependent frequencies (precedence enforced)
+    # --------------------------------------------------
+    for i_sorted, idx in enumerate(order):
+        if lin_comb[idx]:
+            continue
+
+        f = freqs[idx]
+
+        # Only higher-amplitude independent frequencies are allowed
+        valid_freqs = independent_freqs[:i_sorted]
+        valid_ids = independent_ids[:i_sorted]
+
+        if len(valid_freqs) == 0:
+            continue
+
+        # Harmonics
+        prod = coeffs[:, None] * valid_freqs
+        hit = np.isclose(prod, f, atol=tol)
+        if hit.any():
+            a, b = np.argwhere(hit)[0]
+            lin_comb[idx] = f"{coeffs[a]}·{valid_ids[b]}"
+            continue
+
+        # Subharmonics
+        for j, bf in enumerate(valid_freqs):
+            for n in range(2, harmonic_order + 1):
+                if np.isclose(bf / n, f, atol=tol):
+                    lin_comb[idx] = f"1/{n}·{valid_ids[j]}"
+                    break
+            if lin_comb[idx]:
+                break
+        if lin_comb[idx]:
+            continue
+
+        # Binary combinations
+        for j in range(len(valid_freqs)):
+            for k in range(j + 1, len(valid_freqs)):
+                comb = n1 * valid_freqs[j] + n2 * valid_freqs[k]
+                hit = np.isclose(comb, f, atol=tol)
+                if hit.any():
+                    a, b = np.argwhere(hit)[0]
+                    c1, c2 = coeffs[a], coeffs[b]
+                    sign = "+" if c2 > 0 else ""
+                    lin_comb[idx] = (
+                        f"{c1}·{valid_ids[j]}"
+                        f"{sign}{c2}·{valid_ids[k]}"
+                    )
+                    break
+            if lin_comb[idx]:
+                break
+
+    # --------------------------------------------------
+    # Build final DataFrame
+    # --------------------------------------------------
+    out.insert(0, "ID", IDs)
+    out["linear_combination"] = lin_comb
+
+    return out
 
 
 def freq_resolver(freqs:pd.DataFrame, err:float, f_col:int=0, amp_col:int=1, type:str='close-open'):
