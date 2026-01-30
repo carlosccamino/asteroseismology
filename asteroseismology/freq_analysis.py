@@ -172,143 +172,144 @@ def harmonics(
     n_independent: int,
     tol: float
 ) -> pd.DataFrame:
-
     """
-Identify independent frequencies and detect harmonic, subharmonic,
-and linear combinations with amplitude-based precedence.
+    Identify independent frequencies and detect harmonic, subharmonic,
+    and linear combinations with strict amplitude precedence.
 
-This function analyzes a set of spectral frequencies and amplitudes,
-assigning each frequency a unique ID based on descending amplitude
-(F1 = highest amplitude). A frequency can only be explained as a
-combination of frequencies with strictly higher amplitude, ensuring
-a physically consistent and acyclic dependency structure.
+    Frequencies are first sorted by descending amplitude and assigned
+    unique IDs (F1 = highest amplitude). The algorithm proceeds in two
+    stages:
 
-The algorithm:
-1. Sorts frequencies by descending amplitude.
-2. Assigns IDs according to this order.
-3. Selects a set of independent frequencies, rejecting any frequency
-   that can be expressed as a linear combination of previously selected
-   (higher-amplitude) independent frequencies.
-4. For all remaining frequencies, attempts to explain them using:
-   - Harmonics:        f ≈ n · F_i
-   - Subharmonics:     f ≈ (1/n) · F_i
-   - Binary mixtures:  f ≈ n1 · F_i ± n2 · F_j
-   where all base frequencies have higher amplitude than the target.
-5. Returns the original DataFrame with two additional columns:
-   - 'ID': unique frequency identifier ordered by amplitude
-   - 'linear_combination': textual representation of the detected relation
+    1. Initial independent seed:
+       The first `n_independent` frequencies (by amplitude) are taken as
+       a candidate independent set. Any frequency within this set that
+       can be explained as a harmonic, subharmonic, or linear combination
+       of higher-amplitude frequencies is removed from the independent
+       set.
 
-Parameters
-----------
-df : pandas.DataFrame
-    Input DataFrame containing frequency and amplitude data.
-freq_col : int
-    Index of the column containing frequencies (in Hz).
-amp_col : int
-    Index of the column containing amplitudes.
-harmonic_order : int
-    Maximum harmonic/subharmonic order to consider.
-    Harmonics up to n·f and subharmonics down to f/n are evaluated.
-n_independent : int
-    Desired number of independent frequencies. If larger than the
-    number of available frequencies, all possible independent
-    frequencies are returned.
-tol : float
-    Absolute tolerance (in Hz) used when comparing frequencies.
+    2. Downward sweep:
+       Remaining frequencies are processed in descending amplitude
+       order. Each frequency is tested against the current independent
+       set:
+         - If it can be explained, the corresponding relation is stored.
+         - If it cannot be explained, it is promoted to an independent
+           frequency and added to the set, becoming available to explain
+           lower-amplitude frequencies.
 
-Returns
--------
-pandas.DataFrame
-    A copy of the input DataFrame with two extra columns:
-    - 'ID': unique identifier (F1, F2, ...)
-    - 'linear_combination': detected harmonic or linear relation,
-      or 'independent' if the frequency is considered independent.
+    At all times, a frequency may only depend on frequencies with
+    strictly higher amplitude, ensuring a directed and acyclic
+    dependency structure.
 
-Notes
------
-- A frequency is never allowed to depend on another frequency with
-  lower amplitude.
-- Equal-frequency matches always favor the higher-amplitude component.
-- The dependency graph is guaranteed to be directed and acyclic.
-- The implementation prioritizes clarity and physical consistency
-  while leveraging NumPy vectorization for performance.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame containing frequency and amplitude data.
+    freq_col : int
+        Index of the column containing frequencies (Hz).
+    amp_col : int
+        Index of the column containing amplitudes.
+    harmonic_order : int
+        Maximum order for harmonics and subharmonics.
+    n_independent : int
+        Number of initial independent frequencies used as a seed.
+    tol : float
+        Absolute tolerance (Hz) used for frequency matching.
 
-Examples
---------
->>> df_out = harmonics(df, freq_col=0, amp_col=1,
-...                    harmonic_order=5,
-...                    n_independent=10,
-...                    tol=1e-3)
-"""
+    Returns
+    -------
+    pandas.DataFrame
+        Copy of the input DataFrame with two additional columns:
+        - 'ID': unique identifier ordered by amplitude (F1, F2, ...)
+        - 'linear_combination': detected relation or 'independent'
 
+    Notes
+    -----
+    - Equal-frequency matches always favor the higher-amplitude component.
+    - Independent frequencies may grow beyond `n_independent`.
+    - The implementation prioritizes physical consistency and clarity.
+    """
 
     out = df.copy()
     n = len(out)
-    n_independent = min(n_independent, n)
 
     freqs = out.iloc[:, freq_col].to_numpy(float)
     amps = out.iloc[:, amp_col].to_numpy(float)
 
     # --------------------------------------------------
-    # Sort by amplitude (descending)
+    # Sort by amplitude (descending) and assign IDs
     # --------------------------------------------------
     order = np.argsort(-amps)
     freqs_sorted = freqs[order]
 
-    # --------------------------------------------------
-    # Assign IDs following amplitude order
-    # --------------------------------------------------
     IDs_sorted = np.array([f"F{i+1}" for i in range(n)], dtype=object)
     IDs = np.empty(n, dtype=object)
     IDs[order] = IDs_sorted
 
     # --------------------------------------------------
-    # Harmonic coefficients ±n (excluding zero)
+    # Harmonic coefficients (±n, excluding zero)
     # --------------------------------------------------
     coeffs = np.r_[np.arange(-harmonic_order, 0),
                    np.arange(1, harmonic_order + 1)]
 
-    # Precompute binary coefficient grid
+    # Binary coefficient grid
     n1, n2 = np.meshgrid(coeffs, coeffs, indexing="ij")
 
-    independent_freqs = []
-    independent_ids = []
+    # --------------------------------------------------
+    # Helper: check linear explainability
+    # --------------------------------------------------
+    def explain_frequency(f, base_freqs, base_ids):
+        """
+        Try to explain frequency f using base frequencies.
+        Returns a string if explained, otherwise None.
+        """
 
-    # --------------------------------------------------
-    # Linear-combination check with amplitude precedence
-    # --------------------------------------------------
-    def is_linear_combination(f, base_freqs):
         base_freqs = np.asarray(base_freqs)
 
         # Harmonics
-        if np.any(np.isclose(coeffs[:, None] * base_freqs, f, atol=tol)):
-            return True
+        prod = coeffs[:, None] * base_freqs
+        hit = np.isclose(prod, f, atol=tol)
+        if hit.any():
+            a, b = np.argwhere(hit)[0]
+            return f"{coeffs[a]}·{base_ids[b]}"
 
-        # Subharmonics (1/n)
-        for n in range(2, harmonic_order + 1):
-            if np.any(np.isclose(base_freqs / n, f, atol=tol)):
-                return True
+        # Subharmonics
+        for j, bf in enumerate(base_freqs):
+            for n in range(2, harmonic_order + 1):
+                if np.isclose(bf / n, f, atol=tol):
+                    return f"1/{n}·{base_ids[j]}"
 
         # Binary combinations
-        for i in range(len(base_freqs)):
-            for j in range(i + 1, len(base_freqs)):
-                comb = n1 * base_freqs[i] + n2 * base_freqs[j]
-                if np.any(np.isclose(comb, f, atol=tol)):
-                    return True
+        for j in range(len(base_freqs)):
+            for k in range(j + 1, len(base_freqs)):
+                comb = n1 * base_freqs[j] + n2 * base_freqs[k]
+                hit = np.isclose(comb, f, atol=tol)
+                if hit.any():
+                    a, b = np.argwhere(hit)[0]
+                    c1, c2 = coeffs[a], coeffs[b]
+                    sign = "+" if c2 > 0 else ""
+                    return (
+                        f"{c1}·{base_ids[j]}"
+                        f"{sign}{c2}·{base_ids[k]}"
+                    )
 
-        return False
+        return None
 
     # --------------------------------------------------
-    # Independent frequency selection
+    # Initial independent seed (amplitude-based)
     # --------------------------------------------------
-    for idx_sorted, f in zip(order, freqs_sorted):
-        if len(independent_freqs) == n_independent:
-            break
-        if not independent_freqs or not is_linear_combination(f, independent_freqs):
+    independent_freqs = []
+    independent_ids = []
+
+    for idx in order[:min(n_independent, n)]:
+        f = freqs[idx]
+        explanation = explain_frequency(
+            f,
+            independent_freqs,
+            independent_ids
+        )
+        if explanation is None:
             independent_freqs.append(f)
-            independent_ids.append(IDs[idx_sorted])
-
-    independent_freqs = np.asarray(independent_freqs)
+            independent_ids.append(IDs[idx])
 
     # --------------------------------------------------
     # Linear combination column
@@ -319,65 +320,35 @@ Examples
         lin_comb[np.where(IDs == fid)[0][0]] = "independent"
 
     # --------------------------------------------------
-    # Analyze dependent frequencies (precedence enforced)
+    # Downward sweep for remaining frequencies
     # --------------------------------------------------
-    for i_sorted, idx in enumerate(order):
+    for idx in order:
         if lin_comb[idx]:
             continue
 
         f = freqs[idx]
 
-        # Only higher-amplitude independent frequencies are allowed
-        valid_freqs = independent_freqs[:i_sorted]
-        valid_ids = independent_ids[:i_sorted]
+        explanation = explain_frequency(
+            f,
+            independent_freqs,
+            independent_ids
+        )
 
-        if len(valid_freqs) == 0:
-            continue
-
-        # Harmonics
-        prod = coeffs[:, None] * valid_freqs
-        hit = np.isclose(prod, f, atol=tol)
-        if hit.any():
-            a, b = np.argwhere(hit)[0]
-            lin_comb[idx] = f"{coeffs[a]}·{valid_ids[b]}"
-            continue
-
-        # Subharmonics
-        for j, bf in enumerate(valid_freqs):
-            for n in range(2, harmonic_order + 1):
-                if np.isclose(bf / n, f, atol=tol):
-                    lin_comb[idx] = f"1/{n}·{valid_ids[j]}"
-                    break
-            if lin_comb[idx]:
-                break
-        if lin_comb[idx]:
-            continue
-
-        # Binary combinations
-        for j in range(len(valid_freqs)):
-            for k in range(j + 1, len(valid_freqs)):
-                comb = n1 * valid_freqs[j] + n2 * valid_freqs[k]
-                hit = np.isclose(comb, f, atol=tol)
-                if hit.any():
-                    a, b = np.argwhere(hit)[0]
-                    c1, c2 = coeffs[a], coeffs[b]
-                    sign = "+" if c2 > 0 else ""
-                    lin_comb[idx] = (
-                        f"{c1}·{valid_ids[j]}"
-                        f"{sign}{c2}·{valid_ids[k]}"
-                    )
-                    break
-            if lin_comb[idx]:
-                break
+        if explanation is None:
+            # Promote to independent
+            independent_freqs.append(f)
+            independent_ids.append(IDs[idx])
+            lin_comb[idx] = "independent"
+        else:
+            lin_comb[idx] = explanation
 
     # --------------------------------------------------
-    # Build final DataFrame
+    # Final DataFrame
     # --------------------------------------------------
     out.insert(0, "ID", IDs)
     out["linear_combination"] = lin_comb
 
     return out
-
 
 def freq_resolver(freqs:pd.DataFrame, err:float, f_col:int=0, amp_col:int=1, type:str='close-open'):
     """
