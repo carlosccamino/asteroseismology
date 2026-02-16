@@ -173,180 +173,221 @@ def harmonics(
     tol: float
 ) -> pd.DataFrame:
     """
-    Identify independent frequencies and detect harmonic, subharmonic,
-    and linear combinations with strict amplitude precedence.
+    Identifies independent frequencies and detects harmonic, subharmonic, and
+    linear combinations using a vectorized, amplitude-prioritized approach.
 
-    Frequencies are first sorted by descending amplitude and assigned
-    unique IDs (F1 = highest amplitude). The algorithm proceeds in two
-    stages:
+    This function processes frequencies in descending order of amplitude to ensure
+    a strict directed acyclic dependency graph (frequencies can only depend on
+    those with higher amplitude). It employs a "Generator Basis" logic where only
+    the first `n_independent` fundamental frequencies are allowed to form linear
+    combinations to explain subsequent signals.
 
-    1. Initial independent seed:
-       The first `n_independent` frequencies (by amplitude) are taken as
-       a candidate independent set. Any frequency within this set that
-       can be explained as a harmonic, subharmonic, or linear combination
-       of higher-amplitude frequencies is removed from the independent
-       set.
-
-    2. Downward sweep:
-       Remaining frequencies are processed in descending amplitude
-       order. Each frequency is tested against the current independent
-       set:
-         - If it can be explained, the corresponding relation is stored.
-         - If it cannot be explained, it is promoted to an independent
-           frequency and added to the set, becoming available to explain
-           lower-amplitude frequencies.
-
-    At all times, a frequency may only depend on frequencies with
-    strictly higher amplitude, ensuring a directed and acyclic
-    dependency structure.
+    Algorithm Logic
+    ---------------
+    1. **Sorting**: Frequencies are sorted by amplitude (descending).
+    2. **Generator Basis**: A dynamic list of "parent" frequencies is maintained.
+       This list is strictly limited to a maximum size of `n_independent`.
+    3. **Vectorized Matching**: For each frequency `f`:
+       - It is tested against all possible harmonics, subharmonics, and linear
+         combinations of the current Generator Basis using vectorized NumPy
+         operations for high performance.
+       - **Harmonics**: Checks if `f ~= n * base` (where n is integer).
+       - **Subharmonics**: Checks if `f ~= base / n` (where n is integer).
+       - **Linear Combinations**: Checks if `f ~= n1 * base_i + n2 * base_j`.
+    4. **Classification**:
+       - If a match is found within `tol`, the relationship is recorded.
+       - If no match is found, `f` is marked as 'independent'.
+       - **Crucial Step**: If `f` is independent AND the Generator Basis is not
+         yet full (size < `n_independent`), `f` is added to the basis. Otherwise,
+         it remains independent but is not used to explain future frequencies.
 
     Parameters
     ----------
     df : pandas.DataFrame
         Input DataFrame containing frequency and amplitude data.
     freq_col : int
-        Index of the column containing frequencies (Hz).
+        Zero-based column index for frequency values (Hz).
     amp_col : int
-        Index of the column containing amplitudes.
+        Zero-based column index for amplitude values.
     harmonic_order : int
-        Maximum order for harmonics and subharmonics.
+        Maximum integer order for harmonics, subharmonics, and linear coefficients.
+        (e.g., if 2, checks ±1, ±2).
     n_independent : int
-        Number of initial independent frequencies used as a seed.
+        Maximum size of the Generator Basis. Only the first `n_independent`
+        unexplained frequencies will be used as parents for combinations.
     tol : float
-        Absolute tolerance (Hz) used for frequency matching.
+        Absolute frequency tolerance for matching (e.g., 1e-3 for ±0.001 Hz).
 
     Returns
     -------
     pandas.DataFrame
-        Copy of the input DataFrame with two additional columns:
-        - 'ID': unique identifier ordered by amplitude (F1, F2, ...)
-        - 'linear_combination': detected relation or 'independent'
+        A copy of the input DataFrame with two new columns prepended/appended:
+        - 'ID': Unique identifier based on amplitude rank (F1, F2, ...).
+        - 'linear_combination': String describing the relationship (e.g.,
+          "2·F1", "1·F1+2·F3") or "independent".
 
     Notes
     -----
-    - Equal-frequency matches always favor the higher-amplitude component.
-    - Independent frequencies may grow beyond `n_independent`.
-    - The implementation prioritizes physical consistency and clarity.
+    - **Performance**: This implementation uses NumPy broadcasting and vectorization
+      to evaluate thousands of potential combinations simultaneously, making it
+      significantly faster than iterative approaches for large datasets.
+    - **Precedence**: When multiple explanations are possible, the algorithm
+      prioritizes matches involving higher-amplitude parents (lower ID indices).
     """
 
     out = df.copy()
     n = len(out)
 
-    freqs = out.iloc[:, freq_col].to_numpy(float)
-    amps = out.iloc[:, amp_col].to_numpy(float)
+    # Convert columns to numpy arrays for speed
+    freqs = out.iloc[:, freq_col].to_numpy(dtype=float)
+    amps = out.iloc[:, amp_col].to_numpy(dtype=float)
 
     # --------------------------------------------------
-    # Sort by amplitude (descending) and assign IDs
+    # 1. Sort by Amplitude (Descending)
     # --------------------------------------------------
     order = np.argsort(-amps)
     freqs_sorted = freqs[order]
-
-    IDs_sorted = np.array([f"F{i+1}" for i in range(n)], dtype=object)
-    IDs = np.empty(n, dtype=object)
-    IDs[order] = IDs_sorted
-
-    # --------------------------------------------------
-    # Harmonic coefficients (±n, excluding zero)
-    # --------------------------------------------------
-    coeffs = np.r_[np.arange(-harmonic_order, 0),
-                   np.arange(1, harmonic_order + 1)]
-
-    # Binary coefficient grid
-    n1, n2 = np.meshgrid(coeffs, coeffs, indexing="ij")
+    
+    # Create ordered IDs (F1, F2, ...)
+    ids_ordered = np.array([f"F{i+1}" for i in range(n)], dtype=object)
+    
+    # Result container aligned with sorted arrays
+    results_ordered = np.full(n, "", dtype=object)
 
     # --------------------------------------------------
-    # Helper: check linear explainability
+    # 2. Pre-calculate Vectorized Coefficients
     # --------------------------------------------------
-    def explain_frequency(f, base_freqs, base_ids):
-        """
-        Try to explain frequency f using base frequencies.
-        Returns a string if explained, otherwise None.
-        """
-
-        base_freqs = np.asarray(base_freqs)
-
-        # Harmonics
-        prod = coeffs[:, None] * base_freqs
-        hit = np.isclose(prod, f, atol=tol)
-        if hit.any():
-            a, b = np.argwhere(hit)[0]
-            return f"{coeffs[a]}·{base_ids[b]}"
-
-        # Subharmonics
-        for j, bf in enumerate(base_freqs):
-            for n in range(2, harmonic_order + 1):
-                if np.isclose(bf / n, f, atol=tol):
-                    return f"1/{n}·{base_ids[j]}"
-
-        # Binary combinations
-        for j in range(len(base_freqs)):
-            for k in range(j + 1, len(base_freqs)):
-                comb = n1 * base_freqs[j] + n2 * base_freqs[k]
-                hit = np.isclose(comb, f, atol=tol)
-                if hit.any():
-                    a, b = np.argwhere(hit)[0]
-                    c1, c2 = coeffs[a], coeffs[b]
-                    sign = "+" if c2 > 0 else ""
-                    return (
-                        f"{c1}·{base_ids[j]}"
-                        f"{sign}{c2}·{base_ids[k]}"
-                    )
-
-        return None
+    # Coefficients: [-N, ..., -1, 1, ..., N]
+    coeffs = np.r_[np.arange(-harmonic_order, 0), np.arange(1, harmonic_order + 1)]
+    # Divisors for subharmonics: [2, ..., N]
+    divisors = np.arange(2, harmonic_order + 1)
 
     # --------------------------------------------------
-    # Initial independent seed (amplitude-based)
+    # 3. Main Loop (Iterative Row, Vectorized Check)
     # --------------------------------------------------
-    independent_freqs = []
-    independent_ids = []
+    basis_vals = [] # Stores actual frequency values of the basis
+    basis_ids = []  # Stores corresponding IDs (F1, F3, etc.)
 
-    for idx in order[:min(n_independent, n)]:
-        f = freqs[idx]
-        explanation = explain_frequency(
-            f,
-            independent_freqs,
-            independent_ids
-        )
-        if explanation is None:
-            independent_freqs.append(f)
-            independent_ids.append(IDs[idx])
-
-    # --------------------------------------------------
-    # Linear combination column
-    # --------------------------------------------------
-    lin_comb = np.full(n, "", dtype=object)
-
-    for fid in independent_ids:
-        lin_comb[np.where(IDs == fid)[0][0]] = "independent"
-
-    # --------------------------------------------------
-    # Downward sweep for remaining frequencies
-    # --------------------------------------------------
-    for idx in order:
-        if lin_comb[idx]:
+    for i in range(n):
+        target_f = freqs_sorted[i]
+        
+        # If basis is empty, current freq is automatically independent
+        n_base = len(basis_vals)
+        if n_base == 0:
+            basis_vals.append(target_f)
+            basis_ids.append(ids_ordered[i])
+            results_ordered[i] = "independent"
             continue
 
-        f = freqs[idx]
+        # Convert basis to array for broadcasting operations
+        base_arr = np.array(basis_vals) # Shape: (n_base,)
+        
+        explained = False
+        explanation_str = ""
 
-        explanation = explain_frequency(
-            f,
-            independent_freqs,
-            independent_ids
-        )
+        # --- A. Harmonic Check (Vectorized) ---
+        # Matrix shape: (n_coeffs, n_base)
+        harmonics_mat = coeffs[:, None] * base_arr[None, :]
+        diff_h = np.abs(harmonics_mat - target_f)
+        matches_h = np.argwhere(diff_h <= tol)
+        
+        if matches_h.size > 0:
+            # Sort by base index (column 1) to prefer higher amplitude parent
+            best_match = matches_h[np.argsort(matches_h[:, 1])][0]
+            c_idx, b_idx = best_match
+            explanation_str = f"{coeffs[c_idx]}·{basis_ids[b_idx]}"
+            explained = True
 
-        if explanation is None:
-            # Promote to independent
-            independent_freqs.append(f)
-            independent_ids.append(IDs[idx])
-            lin_comb[idx] = "independent"
+        # --- B. Subharmonic Check (Vectorized) ---
+        if not explained and divisors.size > 0:
+            # Matrix shape: (n_base, n_divisors)
+            sub_mat = base_arr[:, None] / divisors[None, :]
+            diff_s = np.abs(sub_mat - target_f)
+            matches_s = np.argwhere(diff_s <= tol)
+
+            if matches_s.size > 0:
+                # Sort by base index (row 0) to prefer higher amplitude parent
+                best_match = matches_s[np.argsort(matches_s[:, 0])][0]
+                b_idx, d_idx = best_match
+                explanation_str = f"1/{divisors[d_idx]}·{basis_ids[b_idx]}"
+                explained = True
+
+        # --- C. Linear Combination Check (Vectorized Advanced) ---
+        if not explained and n_base >= 2:
+            # 1. Flatten all possible terms (c * base)
+            # This allows us to use a single broadcasted sum matrix
+            terms = (base_arr[:, None] * coeffs[None, :]).ravel()
+            
+            # Map flattened indices back to original basis/coeff indices
+            term_base_idx = np.repeat(np.arange(n_base), len(coeffs))
+            term_coeff_idx = np.tile(np.arange(len(coeffs)), n_base)
+
+            # 2. Create Sum Matrix (Broadcasting all vs all)
+            sum_matrix = terms[:, None] + terms[None, :]
+            
+            # 3. Find matches
+            diff_c = np.abs(sum_matrix - target_f)
+            matches_c = np.argwhere(diff_c <= tol)
+
+            if matches_c.size > 0:
+                # Indices in the flattened 'terms' array
+                idx_flat_x = matches_c[:, 0]
+                idx_flat_y = matches_c[:, 1]
+                
+                # Convert to basis indices to filter invalid pairs
+                real_base_i = term_base_idx[idx_flat_x]
+                real_base_j = term_base_idx[idx_flat_y]
+                
+                # Filter: strictly enforce i < j to avoid self-combinations 
+                # or duplicates, ensuring amplitude hierarchy.
+                valid_mask = real_base_i < real_base_j
+                
+                if np.any(valid_mask):
+                    valid_matches = np.where(valid_mask)[0]
+                    
+                    # Sort logic: Prefer lowest index for base_j, then base_i
+                    sort_idx = np.lexsort((
+                        real_base_i[valid_matches], 
+                        real_base_j[valid_matches]
+                    ))
+                    best_match_idx = valid_matches[sort_idx[0]]
+                    
+                    # Retrieve final components
+                    final_x = idx_flat_x[best_match_idx]
+                    final_y = idx_flat_y[best_match_idx]
+                    
+                    c1 = coeffs[term_coeff_idx[final_x]]
+                    id1 = basis_ids[term_base_idx[final_x]]
+                    
+                    c2 = coeffs[term_coeff_idx[final_y]]
+                    id2 = basis_ids[term_base_idx[final_y]]
+                    
+                    sign = "+" if c2 > 0 else ""
+                    explanation_str = f"{c1}·{id1}{sign}{c2}·{id2}"
+                    explained = True
+
+        # --- D. Final Decision & Basis Update ---
+        if explained:
+            results_ordered[i] = explanation_str
         else:
-            lin_comb[idx] = explanation
+            results_ordered[i] = "independent"
+            # CRITICAL LOGIC: Only add to basis if we haven't reached the limit
+            if n_base < n_independent:
+                basis_vals.append(target_f)
+                basis_ids.append(ids_ordered[i])
 
     # --------------------------------------------------
-    # Final DataFrame
+    # 4. Reconstruct DataFrame
     # --------------------------------------------------
-    out.insert(0, "ID", IDs)
-    out["linear_combination"] = lin_comb
+    final_ids = np.empty(n, dtype=object)
+    final_comb = np.empty(n, dtype=object)
+    
+    # Map sorted results back to original DataFrame order
+    final_ids[order] = ids_ordered
+    final_comb[order] = results_ordered
+    
+    out.insert(0, "ID", final_ids)
+    out["linear_combination"] = final_comb
 
     return out
 
