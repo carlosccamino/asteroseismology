@@ -2,10 +2,19 @@
 Author: Carlos Casimiro Camino Mesa
 Date: 11-11-2025
 
-Last Update: 11-11-2025
+Last Update: 03-03-2026
 
 Module to define common constants
 """
+
+class physical_constant:
+    """
+    Defining physical constants in IS:
+
+    G
+    """
+
+    G = 6.66**(-11)
 
 class Sun:
     """
@@ -21,7 +30,7 @@ class Sun:
     """
     mass = 1.9885*10**30 #kg
     radius = 695700*10**3 #m
-    logg = 2.43775056 #dex
+    logg = 4.43775056 #dex
     lum = 3.828*10**26 #W
     teff = 5772 #K
     delta_nu = 11.64672 #c/d
